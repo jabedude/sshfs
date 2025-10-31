@@ -1039,3 +1039,41 @@ impl SFTPConnection {
         })
     }
 }
+
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_dir_listing_basic() {
+        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        conn.connect().await;
+
+        match conn.list_directory("/home/josh".into()).await {
+            Ok(entries) => {
+                for entry in entries {
+                    // Skip . and ..
+                    if entry.filename == "." || entry.filename == ".." {
+                        continue;
+                    }
+
+                    let type_indicator = if entry.attributes.is_directory() {
+                        "/"
+                    } else {
+                        ""
+                    };
+
+                    println!(
+                        "{} {}{}",
+                        entry.attributes, entry.filename, type_indicator
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!("Error listing directory: {}", e);
+                assert!(false);
+            }
+        }
+        println!("Disconnecting...");
+        conn.disconnect().await;
+    }
+}
