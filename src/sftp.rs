@@ -509,7 +509,7 @@ impl SFTPConnection {
         }
 
         // Close the directory
-        self.close(&handle).await?;
+        self.close(handle).await?;
 
         debug!("Listed {} entries in {}", all_entries.len(), path);
         Ok(all_entries)
@@ -633,7 +633,7 @@ impl SFTPConnection {
     }
 
     /// Close a file or directory handle
-    pub async fn close(&self, handle: &SFTPHandle) -> Result<()> {
+    pub async fn close(&self, handle: SFTPHandle) -> Result<()> {
         let request_id = self.request_id_counter.next();
 
         // Build CLOSE packet
@@ -1046,7 +1046,7 @@ mod tests {
     #[tokio::test]
     async fn test_dir_listing_basic() {
         let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
-        conn.connect().await;
+        assert!(conn.connect().await.is_ok());
 
         match conn.list_directory("/home/josh".into()).await {
             Ok(entries) => {
@@ -1074,6 +1074,22 @@ mod tests {
             }
         }
         println!("Disconnecting...");
+        conn.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn test_read_basic() {
+        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        assert!(conn.connect().await.is_ok());
+
+        let handle = conn.open("/home/josh/hello.txt", SFTPOpenFlags::READ).await.unwrap();
+
+        let contents = conn.read(&handle, 0, 1024).await.unwrap();
+        assert!(!contents.is_empty());
+        assert!(contents == b"TEST\n");
+
+        println!("Disconnecting...");
+        assert!(conn.close(handle).await.is_ok());
         conn.disconnect().await;
     }
 }
