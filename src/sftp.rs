@@ -525,6 +525,35 @@ impl SFTPConnection {
         self.stat_generic(path, SSH_FXP_LSTAT).await
     }
 
+    /// Get file attributes for an open file
+    pub async fn fstat(&self, handle: &SFTPHandle) -> Result<FileAttributes> {
+        let request_id = self.request_id_counter.next();
+
+        // Build FSTAT packet
+        let mut buffer = SFTPBuffer::new();
+        buffer.append_u8(SSH_FXP_FSTAT);
+        buffer.append_u32(request_id);
+        buffer.append_data(&handle.data);
+
+        self.send_packet(buffer).await?;
+
+        // Wait for response
+        let response = self.wait_for_response(request_id).await?;
+
+        debug!("fstat: got response: {}", response);
+
+        // Should get ATTRS response
+        if response.type_ == SSH_FXP_ATTRS {
+            let mut buffer = SFTPBuffer::from_bytes(response.payload);
+            Self::parse_attributes(&mut buffer)
+        } else if response.type_ == SSH_FXP_STATUS {
+            let (code, message) = Self::parse_status(&response.payload)?;
+            Err(SFTPError::ServerError(code, message))
+        } else {
+            Err(SFTPError::UnexpectedResponse)
+        }
+    }
+
     /// Open a file
     pub async fn open(&self, path: &str, flags: SFTPOpenFlags) -> Result<SFTPHandle> {
         let request_id = self.request_id_counter.next();
@@ -1087,6 +1116,21 @@ mod tests {
         let contents = conn.read(&handle, 0, 1024).await.unwrap();
         assert!(!contents.is_empty());
         assert!(contents == b"TEST\n");
+
+        println!("Disconnecting...");
+        assert!(conn.close(handle).await.is_ok());
+        conn.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn test_fstat_basic() {
+        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        assert!(conn.connect().await.is_ok());
+
+        let handle = conn.open("/home/josh/hello.txt", SFTPOpenFlags::READ).await.unwrap();
+
+        let stat = conn.fstat(&handle).await.unwrap();
+        assert_eq!(stat.size, 5);
 
         println!("Disconnecting...");
         assert!(conn.close(handle).await.is_ok());
