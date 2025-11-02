@@ -1,5 +1,5 @@
 use crate::inode_map::InodeMap;
-use crate::sftp::SFTPConnection;
+use crate::sftp::{SFTPConnection, SFTPOpenFlags};
 
 use async_trait::async_trait;
 use log::{debug, error, info, warn};
@@ -265,7 +265,19 @@ impl NFSFileSystem for SshFS {
         offset: u64,
         count: u32,
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
-        todo!();
+        info!("read-ing {id} @{offset} for {count}");
+
+        let path = self.inode_map.get_path(id).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+
+        let sftp = self.sftp().await?;
+        let handle = sftp.open(&path, SFTPOpenFlags::READ).await.map_err(Self::map_sftp_error)?;
+        let contents = sftp.read(&handle, offset, count).await.map_err(Self::map_sftp_error)?;
+        sftp.close(handle).await.map_err(Self::map_sftp_error)?;
+
+        // EOF if we got less data than requested OR got empty response
+        let eof = contents.len() < count as usize;
+
+        Ok((contents, eof))
     }
 
     #[doc = " Writes the contents of a file returning (bytes, EOF)"]
