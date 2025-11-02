@@ -137,6 +137,54 @@ impl SshFS {
         log::error!("SFTP error: {}", e);
         nfsstat3::NFS3ERR_IO
     }
+
+    /// Convert SFTP FileAttributes to NFS fattr3
+    fn sftp_attrs_to_nfs(&self, attrs: crate::sftp::FileAttributes, fileid: fileid3) -> fattr3 {
+        fattr3 {
+            ftype: Self::extract_file_type(attrs.permissions),
+            mode: attrs.permissions & 0o7777,  // Permission bits only
+            nlink: 1,  // FIXME: SFTP doesn't seem to provide hard link count
+            uid: attrs.uid,
+            gid: attrs.gid,
+            size: attrs.size,
+            used: attrs.size,  // FIXME: Approximation - SFTP doesn't seem to provide actual disk usage
+            rdev: specdata3 {
+                specdata1: 0,
+                specdata2: 0,
+            },
+            fsid: 0,  // FIXME: Filesystem ID - using 0 as we only have one filesystem
+            fileid,
+            atime: Self::systemtime_to_nfstime(attrs.access_time),
+            mtime: Self::systemtime_to_nfstime(attrs.modification_time),
+            ctime: Self::systemtime_to_nfstime(attrs.modification_time),  // Use mtime for ctime
+        }
+    }
+
+    /// Extract NFS file type from Unix permission bits
+    fn extract_file_type(permissions: u32) -> ftype3 {
+        match permissions & 0xF000 {  // S_IFMT mask
+            0x4000 => ftype3::NF3DIR,   // S_IFDIR - directory
+            0x8000 => ftype3::NF3REG,   // S_IFREG - regular file
+            0xA000 => ftype3::NF3LNK,   // S_IFLNK - symbolic link
+            0x6000 => ftype3::NF3BLK,   // S_IFBLK - block device
+            0x2000 => ftype3::NF3CHR,   // S_IFCHR - character device
+            0xC000 => ftype3::NF3SOCK,  // S_IFSOCK - socket
+            0x1000 => ftype3::NF3FIFO,  // S_IFIFO - named pipe
+            _ => ftype3::NF3REG,        // Default to regular file
+        }
+    }
+
+    /// Convert SystemTime to NFS time format
+    fn systemtime_to_nfstime(time: std::time::SystemTime) -> nfstime3 {
+        let duration = time
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+
+        nfstime3 {
+            seconds: duration.as_secs() as u32,
+            nseconds: duration.subsec_nanos(),
+        }
+    }
 }
 
 #[async_trait]
@@ -180,9 +228,11 @@ impl NFSFileSystem for SshFS {
         let sftp = self.sftp().await?;
         let attrs = sftp.stat(&path).await.map_err(Self::map_sftp_error)?;
 
-        // TODO: Convert FileAttributes -> fattr3
-        log::debug!("getattr: got attrs {attrs} for {}: size={}", path, attrs.size);
-        todo!("Convert FileAttributes to fattr3");
+        // Convert to NFS attributes
+        let nfs_attrs = self.sftp_attrs_to_nfs(attrs, id);
+
+        log::debug!("getattr: returning attrs for {}: size={}", path, nfs_attrs.size);
+        Ok(nfs_attrs)
     }
 
     #[doc = " Sets the attributes of an id"]
