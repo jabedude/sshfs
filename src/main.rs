@@ -14,18 +14,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
 
     // Parse command line arguments
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 4 {
-        eprintln!("Usage: {} <hostname> <username> <remote_path>", args[0]);
-        eprintln!("Example: {} example.com myuser /home/myuser", args[0]);
-        std::process::exit(1);
-    }
+    //let args: Vec<String> = std::env::args().collect();
+    //if args.len() < 4 {
+    //    eprintln!("Usage: {} <hostname> <username> <remote_path>", args[0]);
+    //    eprintln!("Example: {} example.com myuser /home/myuser", args[0]);
+    //    std::process::exit(1);
+    //}
 
-    let hostname = args[1].clone();
-    let username = args[2].clone();
-    let remote_path = args[3].clone();
+    //let hostname = args[1].clone();
+    //let username = args[2].clone();
+    //let remote_path = args[3].clone();
 
-    println!("Will connect to {}@{} serving {}", username, hostname, remote_path);
+    //println!("Will connect to {}@{} serving {}", username, hostname, remote_path);
 
     //// Create and connect
     //let conn = SFTPConnection::new(hostname.to_string(), 22, username.to_string());
@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //println!("Disconnecting...");
     //conn.disconnect().await;
 
-    let fs = SshFS::new(hostname, username, 22, remote_path);
+    let fs = SshFS::new("pop-os".into(), "josh".into(), 22, "/home/josh/".into());
 
     println!("Starting NFS server on 127.0.0.1:11111");
     println!("Mount with: sudo mount -t nfs -o nolocks,vers=3,tcp,port=11111,mountport=11111,soft 127.0.0.1:/ /path/to/mountpoint");

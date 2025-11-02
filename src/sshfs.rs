@@ -2,6 +2,7 @@ use crate::inode_map::InodeMap;
 use crate::sftp::SFTPConnection;
 
 use async_trait::async_trait;
+use log::{debug, error, info, warn};
 use nfsserve::{
     nfs::{
         self, fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfstime3, sattr3, specdata3,
@@ -209,7 +210,18 @@ impl NFSFileSystem for SshFS {
     #[must_use]
     async fn lookup(&self, dirid: fileid3, filename: &filename3) -> Result<fileid3, nfsstat3> {
         println!("lookup: dirid: {dirid}, filename: {:?}", filename);
-        todo!();
+        let parent_path = self.inode_map.get_path(dirid).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let child_path = format!("{}/{}", parent_path, filename);
+
+        // Check if it exists via lstat
+        let sftp = self.sftp().await?;
+        // TODO: Think about if we can cache this to avoid two lstat's
+        debug!("Looking up {child_path}");
+        let _attrs = sftp.lstat(&child_path).await.map_err(Self::map_sftp_error)?;
+
+        // It exists, allocate inode
+        let inode = self.inode_map.get_or_allocate(&child_path);
+        Ok(inode)
     }
 
     #[doc = " Returns the attributes of an id."]
@@ -338,8 +350,61 @@ impl NFSFileSystem for SshFS {
         start_after: fileid3,
         max_entries: usize,
     ) -> Result<ReadDirResult, nfsstat3> {
-        println!("readdir id {dirid} with start after {start_after} and max {max_entries}");
-        todo!();
+        log::debug!("readdir id {dirid} with start after {start_after} and max {max_entries}");
+
+        let dir_path = self.inode_map.get_path(dirid).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let sftp = self.sftp().await?;
+
+        log::debug!("readdir-ing {}", dir_path);
+        let sftp_entries = sftp.list_directory(&dir_path).await.map_err(Self::map_sftp_error)?;
+        log::debug!("readdir {}: got {} entries", dir_path, sftp_entries.len());
+
+        // Convert SFTP entries to NFS entries
+        let mut nfs_entries = Vec::new();
+        for entry in sftp_entries {
+            // Skip . and .. - NFS handles these specially
+            if entry.filename == "." || entry.filename == ".." {
+                continue;
+            }
+
+            // Build full path for this entry
+            let child_path = if dir_path.ends_with('/') {
+                format!("{}{}", dir_path, entry.filename)
+            } else {
+                format!("{}/{}", dir_path, entry.filename)
+            };
+
+            // Allocate inode for this entry
+            let inode = self.inode_map.get_or_allocate(&child_path);
+
+            // Convert to NFS DirEntry
+            nfs_entries.push(DirEntry {
+                fileid: inode,
+                name: entry.filename.into_bytes().into(),
+                attr: self.sftp_attrs_to_nfs(entry.attributes, inode),
+            });
+        }
+
+        // Apply pagination: skip entries <= start_after, take up to max_entries
+        let filtered: Vec<DirEntry> = nfs_entries
+            .into_iter()
+            .filter(|e| e.fileid > start_after)
+            .take(max_entries)
+            .collect();
+
+        // Determine if we've reached the end
+        let end = filtered.len() < max_entries;
+
+        log::debug!(
+            "readdir: returning {} entries, end={}",
+            filtered.len(),
+            end
+        );
+
+        Ok(ReadDirResult {
+            entries: filtered,
+            end,
+        })
     }
 
     #[doc = " Makes a symlink with the following attributes."]
