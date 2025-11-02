@@ -1,6 +1,6 @@
 [package]
-name = "sshfs-rs"
-version = "0.1.0"
+name = "sshfs"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
