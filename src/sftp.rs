@@ -166,6 +166,52 @@ impl SFTPBuffer {
         self.data.put_slice(value);
     }
 
+    /// Append file attributes to the buffer
+    ///
+    /// Pass None for fields you don't want to set (server will use defaults)
+    fn append_attrs(
+        &mut self,
+        size: Option<u64>,
+        uid_gid: Option<(u32, u32)>,
+        permissions: Option<u32>,
+        atime_mtime: Option<(SystemTime, SystemTime)>,
+    ) {
+        // Calculate flags
+        let mut flags = 0u32;
+
+        if size.is_some() {
+            flags |= SSH_FILEXFER_ATTR_SIZE;
+        }
+        if uid_gid.is_some() {
+            flags |= SSH_FILEXFER_ATTR_UIDGID;
+        }
+        if permissions.is_some() {
+            flags |= SSH_FILEXFER_ATTR_PERMISSIONS;
+        }
+        if atime_mtime.is_some() {
+            flags |= SSH_FILEXFER_ATTR_ACMODTIME;
+        }
+
+        // Write flags first
+        self.append_u32(flags);
+
+        // Write optional fields in order
+        if let Some(s) = size {
+            self.append_u64(s);
+        }
+        if let Some((uid, gid)) = uid_gid {
+            self.append_u32(uid);
+            self.append_u32(gid);
+        }
+        if let Some(perms) = permissions {
+            self.append_u32(perms);
+        }
+        if let Some((atime, mtime)) = atime_mtime {
+            self.append_u32(atime.duration_since(UNIX_EPOCH).unwrap().as_secs() as u32);
+            self.append_u32(mtime.duration_since(UNIX_EPOCH).unwrap().as_secs() as u32);
+        }
+    }
+
     // Reading (Parsing Responses)
 
     fn read_u8(&mut self) -> Option<u8> {
@@ -640,6 +686,78 @@ impl SFTPConnection {
             let (code, message) = Self::parse_status(&response.payload)?;
             Err(SFTPError::ServerError(code, message))
         } else {
+            Err(SFTPError::UnexpectedResponse)
+        }
+    }
+
+    /// Create a file, not exclusive
+    pub async fn create(&self, path: &str, attrs: &FileAttributes) -> Result<SFTPHandle> {
+        let request_id = self.request_id_counter.next();
+        // TODO: check that these are the right flags
+        let flags = SFTPOpenFlags::READ | SFTPOpenFlags::CREATE;
+
+        // Build OPEN packet
+        let mut buffer = SFTPBuffer::new();
+        buffer.append_u8(SSH_FXP_OPEN);
+        buffer.append_u32(request_id);
+        buffer.append_string(path);
+        buffer.append_u32(flags.bits());
+        buffer.append_attrs(
+            Some(attrs.size),
+            Some((attrs.uid, attrs.gid)),
+            Some(attrs.permissions), 
+            Some((attrs.access_time, attrs.modification_time))
+        );
+
+        self.send_packet(buffer).await?;
+
+        // Wait for response
+        let response = self.wait_for_response(request_id).await?;
+
+        debug!("create: got response: {}", response);
+
+        // Should get HANDLE response
+        if response.type_ == SSH_FXP_HANDLE {
+            let mut payload = SFTPBuffer::from_bytes(response.payload);
+            let handle_data = payload
+                .read_data()
+                .ok_or_else(|| SFTPError::ProtocolError("Failed to parse file handle".into()))?;
+            Ok(SFTPHandle::new(handle_data))
+        } else if response.type_ == SSH_FXP_STATUS {
+            let (code, message) = Self::parse_status(&response.payload)?;
+            Err(SFTPError::ServerError(code, message))
+        } else {
+            Err(SFTPError::UnexpectedResponse)
+        }
+    }
+    ///
+    /// Delete a file
+    pub async fn remove(&self, path: &str) -> Result<()> {
+        let request_id = self.request_id_counter.next();
+
+        // Build REMOVE packet
+        let mut buffer = SFTPBuffer::new();
+        buffer.append_u8(SSH_FXP_REMOVE);
+        buffer.append_u32(request_id);
+        buffer.append_string(path);
+
+        self.send_packet(buffer).await?;
+
+        // Wait for response
+        let response = self.wait_for_response(request_id).await?;
+
+        debug!("remove: got response: {}", response);
+
+        // Should get STATUS response
+        if response.type_ == SSH_FXP_STATUS {
+            let (code, message) = Self::parse_status(&response.payload)?;
+            if code == SSH_FX_OK {
+                Ok(())
+            } else {
+                Err(SFTPError::ServerError(code, message))
+            }
+        } else {
+            error!("delete: got unexpected response: {}", response);
             Err(SFTPError::UnexpectedResponse)
         }
     }
@@ -1126,6 +1244,8 @@ impl SFTPConnection {
 }
 
 mod tests {
+    use std::time::SystemTime;
+    use crate::sftp::FileAttributes;
     use crate::sftp::SFTPOpenFlags;
     use crate::sftp::SFTPConnection;
 
@@ -1201,6 +1321,29 @@ mod tests {
 
         let target = conn.readlink("/home/josh/testlink").await.unwrap();
         assert_eq!("hello.txt", target);
+
+        println!("Disconnecting...");
+        conn.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn test_create_and_remove() {
+        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        assert!(conn.connect().await.is_ok());
+
+        let attrs = FileAttributes {
+           size: 0,
+           uid: 1000,  // Typical user uid
+           gid: 1000,  // Typical user gid
+           permissions: 0o644,  // rw-r--r--
+           access_time: SystemTime::now(),
+           modification_time: SystemTime::now(),
+       };
+
+        let handle = conn.create("/home/josh/testcreate", &attrs).await.unwrap();
+        assert!(conn.close(handle).await.is_ok());
+
+        assert!(conn.remove("/home/josh/testcreate").await.is_ok());
 
         println!("Disconnecting...");
         conn.disconnect().await;
