@@ -8,7 +8,7 @@ A Rust implementation that exposes remote filesystems over SSH/SFTP as a local N
 
 ## What is it?
 
-sshfs provides an NFS server that proxies filesystem operations to a remote system over SSH/SFTP. This allows you to mount remote directories using standard NFS clients without requiring FUSE or special kernel modules.
+Think of it like glue/middleware between an NFS server and SFTP. sshfs provides an NFS server that proxies filesystem operations to a remote system over SSH/SFTP. This allows you to mount remote directories using standard NFS clients without requiring FUSE or special kernel modules.
 
 ## Usage
 
