@@ -194,7 +194,6 @@ impl NFSFileSystem for SshFS {
     #[doc = " and this should return the id of the file \"dir/a.txt\""]
     #[doc = ""]
     #[doc = " This method should be fast as it is used very frequently."]
-    #[must_use]
     async fn lookup(&self, dirid: fileid3, filename: &filename3) -> Result<fileid3, nfsstat3> {
         debug!("lookup: dirid: {dirid}, filename: {:?}", filename);
         let parent_path = self.inode_map.get_path(dirid).ok_or(nfsstat3::NFS3ERR_NOENT)?;
@@ -214,7 +213,6 @@ impl NFSFileSystem for SshFS {
 
     #[doc = " Returns the attributes of an id."]
     #[doc = " This method should be fast as it is used very frequently."]
-    #[must_use]
     async fn getattr(&self, id: fileid3) -> Result<fattr3, nfsstat3> {
         // Resolve inode to path
         let path = self.inode_map.get_path(id).ok_or_else(|| {
@@ -237,7 +235,6 @@ impl NFSFileSystem for SshFS {
 
     #[doc = " Sets the attributes of an id"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS) if readonly"]
-    #[must_use]
     async fn setattr(&self, id: fileid3, setattr: sattr3) -> Result<fattr3, nfsstat3> {
         todo!()
     }
@@ -246,7 +243,6 @@ impl NFSFileSystem for SshFS {
     #[doc = " Note that offset/count may go past the end of the file and that"]
     #[doc = " in that case, all bytes till the end of file are returned."]
     #[doc = " EOF must be flagged if the end of the file is reached by the read."]
-    #[must_use]
     async fn read(
         &self,
         id: fileid3,
@@ -273,7 +269,6 @@ impl NFSFileSystem for SshFS {
     #[doc = " in that case, the file is extended."]
     #[doc = " If not supported due to readonly file system"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS)"]
-    #[must_use]
     async fn write(&self, id: fileid3, offset: u64, data: &[u8]) -> Result<fattr3, nfsstat3> {
         todo!()
     }
@@ -281,7 +276,6 @@ impl NFSFileSystem for SshFS {
     #[doc = " Creates a file with the following attributes."]
     #[doc = " If not supported due to readonly file system"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS)"]
-    #[must_use]
     async fn create(
         &self,
         dirid: fileid3,
@@ -293,7 +287,6 @@ impl NFSFileSystem for SshFS {
 
     #[doc = " Creates a file if it does not already exist"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS)"]
-    #[must_use]
     async fn create_exclusive(
         &self,
         dirid: fileid3,
@@ -305,7 +298,6 @@ impl NFSFileSystem for SshFS {
     #[doc = " Makes a directory with the following attributes."]
     #[doc = " If not supported dur to readonly file system"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS)"]
-    #[must_use]
     async fn mkdir(
         &self,
         dirid: fileid3,
@@ -317,7 +309,6 @@ impl NFSFileSystem for SshFS {
     #[doc = " Removes a file."]
     #[doc = " If not supported due to readonly file system"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS)"]
-    #[must_use]
     async fn remove(&self, dirid: fileid3, filename: &filename3) -> Result<(), nfsstat3> {
         todo!()
     }
@@ -325,7 +316,6 @@ impl NFSFileSystem for SshFS {
     #[doc = " Removes a file."]
     #[doc = " If not supported due to readonly file system"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS)"]
-    #[must_use]
     async fn rename(
         &self,
         from_dirid: fileid3,
@@ -343,7 +333,6 @@ impl NFSFileSystem for SshFS {
     #[doc = ""]
     #[doc = " For instance if the directory has entry with ids [1,6,2,11,8,9]"]
     #[doc = " and start_after=6, readdir should returning 2,11,8,..."]
-    #[must_use]
     async fn readdir(
         &self,
         dirid: fileid3,
@@ -406,7 +395,6 @@ impl NFSFileSystem for SshFS {
     #[doc = " Makes a symlink with the following attributes."]
     #[doc = " If not supported due to readonly file system"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS)"]
-    #[must_use]
     async fn symlink(
         &self,
         dirid: fileid3,
@@ -418,7 +406,6 @@ impl NFSFileSystem for SshFS {
     }
 
     #[doc = " Reads a symlink"]
-    #[must_use]
     async fn readlink(&self, id: fileid3) -> Result<nfspath3, nfsstat3> {
         let link_path = self.inode_map.get_path(id).ok_or(nfsstat3::NFS3ERR_NOENT)?;
         log::debug!("readlink-ing {}", link_path);
