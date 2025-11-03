@@ -41,6 +41,8 @@ const SSH_FXP_RMDIR: u8 = 15;
 const SSH_FXP_REALPATH: u8 = 16;
 const SSH_FXP_STAT: u8 = 17;
 const SSH_FXP_RENAME: u8 = 18;
+const SSH_FXP_READLINK: u8 = 19;
+const SSH_FXP_SYMLINK: u8 = 20;
 
 // Response types
 const SSH_FXP_STATUS: u8 = 101;
@@ -523,6 +525,60 @@ impl SFTPConnection {
     /// Get file attributes (does not follow symlinks)
     pub async fn lstat(&self, path: &str) -> Result<FileAttributes> {
         self.stat_generic(path, SSH_FXP_LSTAT).await
+    }
+
+    /// Read the target of a symbolic link
+    pub async fn readlink(&self, path: &str) -> Result<String> {
+        debug!("Reading symlink: {}", path);
+        let request_id = self.request_id_counter.next();
+
+        // Build READLINK packet
+        let mut buffer = SFTPBuffer::new();
+        buffer.append_u8(SSH_FXP_READLINK);
+        buffer.append_u32(request_id);
+        buffer.append_string(path);
+
+        self.send_packet(buffer).await?;
+
+        // Wait for response
+        let response = self.wait_for_response(request_id).await?;
+
+        debug!("readlink: got response: {}", response);
+
+        // Should get NAME response with one entry
+        if response.type_ == SSH_FXP_NAME {
+            let mut buffer = SFTPBuffer::from_bytes(response.payload);
+
+            let count = buffer
+                .read_u32()
+                .ok_or_else(|| SFTPError::ProtocolError("Failed to parse name count".into()))?;
+
+            if count != 1 {
+                return Err(SFTPError::ProtocolError(format!(
+                    "Expected 1 name in readlink response, got {}",
+                    count
+                )));
+            }
+
+            // Read the target path (filename field contains the target)
+            let target = buffer
+                .read_string()
+                .ok_or_else(|| SFTPError::ProtocolError("Failed to parse link target".into()))?;
+
+            // Skip longname (dummy field)
+            let _ = buffer.read_string();
+
+            // Skip attributes (dummy field)
+            // We don't need to fully parse them, just skip past them
+
+            debug!("Symlink {} -> {}", path, target);
+            Ok(target)
+        } else if response.type_ == SSH_FXP_STATUS {
+            let (code, message) = Self::parse_status(&response.payload)?;
+            Err(SFTPError::ServerError(code, message))
+        } else {
+            Err(SFTPError::UnexpectedResponse)
+        }
     }
 
     /// Get file attributes for an open file
@@ -1134,6 +1190,18 @@ mod tests {
 
         println!("Disconnecting...");
         assert!(conn.close(handle).await.is_ok());
+        conn.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn test_readlink() {
+        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        assert!(conn.connect().await.is_ok());
+
+        let target = conn.readlink("/home/josh/testlink").await.unwrap();
+        assert_eq!("/tmp/testfile", target);
+
+        println!("Disconnecting...");
         conn.disconnect().await;
     }
 }
