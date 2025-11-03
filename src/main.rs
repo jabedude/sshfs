@@ -1,3 +1,6 @@
+#![allow(
+dead_code)]
+
 mod sftp;
 mod sshfs;
 mod inode_map;

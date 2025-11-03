@@ -83,38 +83,8 @@ impl SshFS {
         Ok(())
     }
 
-    /// Execute an operation with the SFTP connection (closure-based)
-    ///
-    /// This automatically ensures the connection is established before
-    /// calling the provided closure. This is the recommended way to
-    /// interact with the SFTP connection.
-    ///
-    /// # Example
-    /// ```
-    /// self.with_connection(|sftp| async move {
-    ///     sftp.stat(&path).await
-    /// }).await
-    /// ```
-    async fn with_connection<F, Fut, T>(&self, f: F) -> Result<T, nfsstat3>
-    where
-        F: FnOnce(&SFTPConnection) -> Fut,
-        Fut: std::future::Future<Output = Result<T, crate::sftp::SFTPError>>,
-    {
-        self.ensure_connected().await?;
-
-        let conn_guard = self.connection.lock().await;
-        let sftp = conn_guard.as_ref().unwrap();
-
-        f(sftp).await.map_err(|e| {
-            log::error!("SFTP operation failed: {}", e);
-            // TODO: Map specific SFTP errors to NFS errors
-            nfsstat3::NFS3ERR_IO
-        })
-    }
-
     /// Get the SFTP connection, ensuring it's established (guard-based)
     ///
-    /// Alternative to with_connection() that returns a lock guard.
     /// The connection remains locked until the guard is dropped.
     ///
     /// # Example

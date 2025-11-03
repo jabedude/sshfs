@@ -1126,7 +1126,8 @@ impl SFTPConnection {
 }
 
 mod tests {
-    use super::*;
+    use crate::sftp::SFTPOpenFlags;
+    use crate::sftp::SFTPConnection;
 
     #[tokio::test]
     async fn test_dir_listing_basic() {
