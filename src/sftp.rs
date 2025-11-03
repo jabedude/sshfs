@@ -1199,7 +1199,7 @@ mod tests {
         assert!(conn.connect().await.is_ok());
 
         let target = conn.readlink("/home/josh/testlink").await.unwrap();
-        assert_eq!("/tmp/testfile", target);
+        assert_eq!("hello.txt", target);
 
         println!("Disconnecting...");
         conn.disconnect().await;

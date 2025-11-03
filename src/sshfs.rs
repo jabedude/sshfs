@@ -209,9 +209,10 @@ impl NFSFileSystem for SshFS {
     #[doc = " This method should be fast as it is used very frequently."]
     #[must_use]
     async fn lookup(&self, dirid: fileid3, filename: &filename3) -> Result<fileid3, nfsstat3> {
-        println!("lookup: dirid: {dirid}, filename: {:?}", filename);
+        debug!("lookup: dirid: {dirid}, filename: {:?}", filename);
         let parent_path = self.inode_map.get_path(dirid).ok_or(nfsstat3::NFS3ERR_NOENT)?;
-        let child_path = format!("{}/{}", parent_path, filename);
+        let filename_str = String::from_utf8_lossy(filename.as_ref());
+        let child_path = format!("{}/{}", parent_path.trim_end_matches('/'), filename_str);
 
         // Check if it exists via lstat
         let sftp = self.sftp().await?;
@@ -236,9 +237,9 @@ impl NFSFileSystem for SshFS {
 
         log::debug!("getattr: id={} path={}", id, path);
 
-        // Get SFTP file attributes
+        // Get SFTP file attributes (use lstat to not follow symlinks)
         let sftp = self.sftp().await?;
-        let attrs = sftp.stat(&path).await.map_err(Self::map_sftp_error)?;
+        let attrs = sftp.lstat(&path).await.map_err(Self::map_sftp_error)?;
 
         // Convert to NFS attributes
         let nfs_attrs = self.sftp_attrs_to_nfs(attrs, id);
@@ -380,11 +381,7 @@ impl NFSFileSystem for SshFS {
             }
 
             // Build full path for this entry
-            let child_path = if dir_path.ends_with('/') {
-                format!("{}{}", dir_path, entry.filename)
-            } else {
-                format!("{}/{}", dir_path, entry.filename)
-            };
+            let child_path = format!("{}/{}", dir_path.trim_end_matches('/'), entry.filename);
 
             // Allocate inode for this entry
             let inode = self.inode_map.get_or_allocate(&child_path);
@@ -436,6 +433,11 @@ impl NFSFileSystem for SshFS {
     #[doc = " Reads a symlink"]
     #[must_use]
     async fn readlink(&self, id: fileid3) -> Result<nfspath3, nfsstat3> {
-        todo!()
+        let link_path = self.inode_map.get_path(id).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        log::debug!("readlink-ing {}", link_path);
+        let sftp = self.sftp().await?;
+        let target_path = sftp.readlink(&link_path).await.map_err(Self::map_sftp_error)?;
+        // TODO: do we need sftp to give us a string just to turn it back into vec<u8>?
+        Ok(target_path.into_bytes().into())
     }
 }
