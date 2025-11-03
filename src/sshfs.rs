@@ -20,6 +20,7 @@ pub struct SshFS {
     username: String,
     port: u16,
     remote_root: String,
+    read_only: bool,
 
     // SFTP connection (lazy initialized)
     connection: Arc<Mutex<Option<SFTPConnection>>>,
@@ -45,6 +46,7 @@ impl SshFS {
             username,
             port,
             remote_root: remote_root.clone(),
+            read_only: true,
             connection: Arc::new(Mutex::new(None)),
             inode_map: Arc::new(InodeMap::new(remote_root, 0)),
         }
@@ -179,7 +181,10 @@ impl SshFS {
 impl NFSFileSystem for SshFS {
     #[doc = " Returns the set of capabilities supported"]
     fn capabilities(&self) -> VFSCapabilities {
-        VFSCapabilities::ReadOnly
+        match self.read_only {
+            true => VFSCapabilities::ReadOnly,
+            false => VFSCapabilities::ReadWrite,
+        }
     }
 
     #[doc = " Returns the ID the of the root directory \"/\""]
