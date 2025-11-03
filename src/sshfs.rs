@@ -2,6 +2,7 @@ use crate::inode_map::InodeMap;
 use crate::sftp::{SFTPConnection, SFTPOpenFlags};
 
 use async_trait::async_trait;
+use libc;
 use log::{debug, error, info, warn};
 use nfsserve::{
     nfs::{
@@ -132,10 +133,26 @@ impl SshFS {
         }))
     }
 
+    /// Map errnos to NFS errors
+    fn map_errno_error(code: u32) -> nfsstat3 {
+        match code as i32 {
+            libc::ENOENT => return nfsstat3::NFS3ERR_NOENT,
+            _ => {}
+        }
+        nfsstat3::NFS3ERR_IO
+    }
+
     /// Map SFTP errors to NFS errors
     fn map_sftp_error(e: crate::sftp::SFTPError) -> nfsstat3 {
         // TODO: More sophisticated error mapping
         log::error!("SFTP error: {}", e);
+        match e {
+            crate::sftp::SFTPError::ServerError(code, message) => {
+                return Self::map_errno_error(code);
+            },
+            _ => {}
+        }
+
         nfsstat3::NFS3ERR_IO
     }
 

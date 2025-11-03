@@ -11,7 +11,7 @@ use sftp::{SFTPConnection, SFTPOpenFlags};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     // Parse command line arguments
     //let args: Vec<String> = std::env::args().collect();
