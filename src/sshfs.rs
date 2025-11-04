@@ -408,7 +408,24 @@ impl NFSFileSystem for SshFS {
     #[doc = " If not supported due to readonly file system"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS)"]
     async fn remove(&self, dirid: fileid3, filename: &filename3) -> Result<(), nfsstat3> {
-        todo!()
+        if self.read_only {
+            return Err(nfsstat3::NFS3ERR_ROFS)
+        }
+
+        let parent_path = self.inode_map.get_path(dirid).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let filename_str = String::from_utf8_lossy(filename.as_ref());
+        let child_path = format!("{}/{}", parent_path.trim_end_matches('/'), filename_str);
+        info!("remove: file path: {child_path}");
+
+        let sftp = self.sftp().await?;
+        sftp.remove(&child_path).await.map_err(Self::map_sftp_error)?;
+
+        // Clean up inode cache
+        if let Some(inode) = self.inode_map.get_inode(&child_path) {
+            self.inode_map.remove(inode);
+        }
+
+        Ok(())
     }
 
     #[doc = " Removes a file."]
