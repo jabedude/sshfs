@@ -128,6 +128,54 @@ impl SshFS {
         nfsstat3::NFS3ERR_IO
     }
 
+    /// Convert NFS sattr3 to SFTP FileAttributes
+    ///
+    /// Uses provided defaults for any unset fields
+    fn sattr3_to_sftp_attrs(&self, sattr: sattr3) -> crate::sftp::FileAttributes {
+        use nfs::{set_mode3, set_uid3, set_gid3, set_size3, set_atime, set_mtime};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Extract values or use defaults
+        let permissions = match sattr.mode {
+            set_mode3::mode(m) => m,
+            set_mode3::Void => 0o644,  // Default file permissions
+        };
+
+        let uid = match sattr.uid {
+            set_uid3::uid(u) => u,
+            set_uid3::Void => 1000,  // Default user
+        };
+
+        let gid = match sattr.gid {
+            set_gid3::gid(g) => g,
+            set_gid3::Void => 1000,  // Default group
+        };
+
+        let size = match sattr.size {
+            set_size3::size(s) => s,
+            set_size3::Void => 0,  // Default to empty file
+        };
+
+        let access_time = match sattr.atime {
+            set_atime::SET_TO_CLIENT_TIME(t) => UNIX_EPOCH + std::time::Duration::from_secs(t.seconds as u64),
+            set_atime::SET_TO_SERVER_TIME | set_atime::DONT_CHANGE => SystemTime::now(),
+        };
+
+        let modification_time = match sattr.mtime {
+            set_mtime::SET_TO_CLIENT_TIME(t) => UNIX_EPOCH + std::time::Duration::from_secs(t.seconds as u64),
+            set_mtime::SET_TO_SERVER_TIME | set_mtime::DONT_CHANGE => SystemTime::now(),
+        };
+
+        crate::sftp::FileAttributes {
+            size,
+            uid,
+            gid,
+            permissions,
+            access_time,
+            modification_time,
+        }
+    }
+
     /// Convert SFTP FileAttributes to NFS fattr3
     fn sftp_attrs_to_nfs(&self, attrs: crate::sftp::FileAttributes, fileid: fileid3) -> fattr3 {
         fattr3 {
@@ -287,7 +335,29 @@ impl NFSFileSystem for SshFS {
         filename: &filename3,
         setattr: sattr3,
     ) -> Result<(fileid3, fattr3), nfsstat3> {
-        todo!()
+        info!("create: dir {dirid} filename: {filename} setattr {:?}", setattr);
+
+        if self.read_only {
+            return Err(nfsstat3::NFS3ERR_ROFS);
+        }
+
+        let parent_path = self.inode_map.get_path(dirid).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let filename_str = String::from_utf8_lossy(filename.as_ref());
+        let child_path = format!("{}/{}", parent_path.trim_end_matches('/'), filename_str);
+
+        let sftp = self.sftp().await?;
+        debug!("Creating file at {child_path}");
+        let create_attrs = self.sattr3_to_sftp_attrs(setattr);
+        let handle = sftp.create(&child_path, &create_attrs).await.map_err(Self::map_sftp_error)?;
+        // TODO: should we do this? it's most correct but also, we could simply return the passed
+        // in attrs...
+        let file_attrs = sftp.fstat(&handle).await.map_err(Self::map_sftp_error)?;
+        sftp.close(handle).await.map_err(Self::map_sftp_error)?;
+        // It exists now, allocate an inode
+        let inode = self.inode_map.get_or_allocate(&child_path);
+        let nfs_attrs = self.sftp_attrs_to_nfs(file_attrs, inode);
+
+        Ok((inode, nfs_attrs))
     }
 
     #[doc = " Creates a file if it does not already exist"]
