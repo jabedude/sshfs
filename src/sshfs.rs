@@ -323,7 +323,30 @@ impl NFSFileSystem for SshFS {
     #[doc = " If not supported due to readonly file system"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS)"]
     async fn write(&self, id: fileid3, offset: u64, data: &[u8]) -> Result<fattr3, nfsstat3> {
-        todo!()
+        // TODO: opens and closes the file on every write call. This means for a typical file write
+        // Client writes 1MB file in 32KB chunks:
+        // Each does: OPEN → WRITE → FSTAT → CLOSE
+        // That's 4 round trips × 32 = 128 round trips!
+        // Yikes!
+        //
+        // we should consider alternatives where we keep around the handle. but maybe that's just a
+        // downside of the stateless-ness of nfsv3
+        if self.read_only {
+            return Err(nfsstat3::NFS3ERR_ROFS);
+        }
+
+        let path = self.inode_map.get_path(id).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        info!("write: file {id} @{offset} path: {path}");
+
+        let sftp = self.sftp().await?;
+        let handle = sftp.open(&path, SFTPOpenFlags::WRITE).await.map_err(Self::map_sftp_error)?;
+        sftp.write(&handle, offset, data).await.map_err(Self::map_sftp_error)?;
+        let file_attrs = sftp.fstat(&handle).await.map_err(Self::map_sftp_error)?;
+        sftp.close(handle).await.map_err(Self::map_sftp_error)?;
+
+        let nfs_attrs = self.sftp_attrs_to_nfs(file_attrs, id);
+
+        Ok(nfs_attrs)
     }
 
     #[doc = " Creates a file with the following attributes."]
