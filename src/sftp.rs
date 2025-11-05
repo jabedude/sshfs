@@ -639,6 +639,48 @@ impl SFTPConnection {
         }
     }
 
+    /// Set file attributes (like chmod, chown, utime)
+    ///
+    /// Only sets the attributes you specify as Some(...).
+    /// Pass None to leave an attribute unchanged.
+    /// *Note*: requires root to change uid/gid.
+    pub async fn setstat(
+        &self,
+        path: &str,
+        size: Option<u64>,
+        uid_gid: Option<(u32, u32)>,
+        permissions: Option<u32>,
+        atime_mtime: Option<(SystemTime, SystemTime)>,
+    ) -> Result<()> {
+        let request_id = self.request_id_counter.next();
+
+        // Build SETSTAT packet
+        let mut buffer = SFTPBuffer::new();
+        buffer.append_u8(SSH_FXP_SETSTAT);
+        buffer.append_u32(request_id);
+        buffer.append_string(path);
+        buffer.append_attrs(size, uid_gid, permissions, atime_mtime);
+
+        self.send_packet(buffer).await?;
+
+        // Wait for response
+        let response = self.wait_for_response(request_id).await?;
+
+        debug!("setstat: got response: {}", response);
+
+        // Should get STATUS response
+        if response.type_ == SSH_FXP_STATUS {
+            let (code, message) = Self::parse_status(&response.payload)?;
+            if code == SSH_FX_OK {
+                Ok(())
+            } else {
+                Err(SFTPError::ServerError(code, message))
+            }
+        } else {
+            error!("setstat: got unexpected response: {}", response);
+            Err(SFTPError::UnexpectedResponse)
+        }
+    }
     /// Get file attributes for an open file
     pub async fn fstat(&self, handle: &SFTPHandle) -> Result<FileAttributes> {
         let request_id = self.request_id_counter.next();
@@ -1410,6 +1452,36 @@ mod tests {
 
         println!("Disconnecting...");
         assert!(conn.close(handle).await.is_ok());
+        conn.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn test_setstat_basic() {
+        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        assert!(conn.connect().await.is_ok());
+
+        // Test chmod: only set permissions, don't try to chown (requires root)
+        conn.setstat(
+            "/home/josh/teststat",
+            None,                // Don't change size
+            None,                // Don't change uid/gid (would require root)
+            Some(0o100764),      // Change permissions (with file type bits)
+            None,                // Don't change times
+        ).await.unwrap();
+
+        let stat = conn.stat("/home/josh/teststat").await.unwrap();
+        assert_eq!(stat.permissions & 0o777, 0o764);  // Check permission bits only
+
+        // Change back to 0664
+        assert!(conn.setstat(
+            "/home/josh/teststat",
+            None,
+            None,
+            Some(0o100664),      // Regular file with 0664 permissions
+            None,
+        ).await.is_ok());
+
+        println!("Disconnecting...");
         conn.disconnect().await;
     }
 
