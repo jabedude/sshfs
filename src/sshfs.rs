@@ -336,7 +336,7 @@ impl NFSFileSystem for SshFS {
         }
 
         let path = self.inode_map.get_path(id).ok_or(nfsstat3::NFS3ERR_NOENT)?;
-        info!("write: file {id} @{offset} path: {path}");
+        debug!("write: file {id} @{offset} path: {path}");
 
         let sftp = self.sftp().await?;
         let handle = sftp.open(&path, SFTPOpenFlags::WRITE).await.map_err(Self::map_sftp_error)?;
