@@ -270,6 +270,18 @@ impl SFTPBuffer {
 // Public API Types
 // ============================================================================
 
+/// Status RequestID with pending response channel
+pub struct SFTPStatusRequestID {
+    request_id: u32,
+    receiver: oneshot::Receiver<Result<SFTPResponse>>,
+}
+
+/// File Attributes RequestID with pending response channel
+pub struct SFTPFileAttrsRequestID {
+    request_id: u32,
+    receiver: oneshot::Receiver<Result<SFTPResponse>>,
+}
+
 /// File or directory attributes from SFTP
 #[derive(Debug, Clone)]
 pub struct FileAttributes {
@@ -656,6 +668,48 @@ impl SFTPConnection {
         }
     }
 
+    /// Get file attributes for an open file without waiting
+    pub async fn fstat_nowait(&self, handle: &SFTPHandle) -> Result<SFTPFileAttrsRequestID> {
+        let request_id = self.request_id_counter.next();
+
+        // Create channel and register BEFORE sending (avoids race condition)
+        let (tx, rx) = oneshot::channel();
+        self.pending_requests.lock().await.insert(request_id, tx);
+
+        // Build FSTAT packet
+        let mut buffer = SFTPBuffer::new();
+        buffer.append_u8(SSH_FXP_FSTAT);
+        buffer.append_u32(request_id);
+        buffer.append_data(&handle.data);
+
+        self.send_packet(buffer).await?;
+
+        Ok(SFTPFileAttrsRequestID {
+            request_id,
+            receiver: rx,
+        })
+    }
+
+    /// Wait for the response to a request which returns FileAttributes
+    pub async fn wait_for_fileattrs_response(&self, req: SFTPFileAttrsRequestID) -> Result<FileAttributes> {
+        // Wait for response from the pre-registered channel
+        let response = req.receiver.await
+            .map_err(|_| SFTPError::ResponseChannelClosed)??;
+
+        debug!("fstat_nowait: got response: {}", response);
+
+        // Must get ATTRS response
+        if response.type_ == SSH_FXP_ATTRS {
+            let mut buffer = SFTPBuffer::from_bytes(response.payload);
+            Self::parse_attributes(&mut buffer)
+        } else if response.type_ == SSH_FXP_STATUS {
+            let (code, message) = Self::parse_status(&response.payload)?;
+            Err(SFTPError::ServerError(code, message))
+        } else {
+            Err(SFTPError::UnexpectedResponse)
+        }
+    }
+
     /// Open a file
     pub async fn open(&self, path: &str, flags: SFTPOpenFlags) -> Result<SFTPHandle> {
         let request_id = self.request_id_counter.next();
@@ -831,6 +885,51 @@ impl SFTPConnection {
             }
         } else {
             error!("write: got unexpected response: {}", response);
+            Err(SFTPError::UnexpectedResponse)
+        }
+    }
+
+    /// Write to a file without waiting for response
+    pub async fn write_nowait(&self, handle: &SFTPHandle, offset: u64, data: &[u8]) -> Result<SFTPStatusRequestID> {
+        let request_id = self.request_id_counter.next();
+
+        // Create channel and register BEFORE sending (avoids race condition)
+        let (tx, rx) = oneshot::channel();
+        self.pending_requests.lock().await.insert(request_id, tx);
+
+        // Build WRITE packet
+        let mut buffer = SFTPBuffer::new();
+        buffer.append_u8(SSH_FXP_WRITE);
+        buffer.append_u32(request_id);
+        buffer.append_data(&handle.data);
+        buffer.append_u64(offset);
+        buffer.append_data(data);
+
+        self.send_packet(buffer).await?;
+
+        Ok(SFTPStatusRequestID {
+            request_id,
+            receiver: rx,
+        })
+    }
+
+    pub async fn wait_for_status_response(&self, req: SFTPStatusRequestID) -> Result<()> {
+        // Wait for response from the pre-registered channel
+        let response = req.receiver.await
+            .map_err(|_| SFTPError::ResponseChannelClosed)??;
+
+        debug!("write_nowait: got response: {}", response);
+
+        // Must get STATUS response
+        if response.type_ == SSH_FXP_STATUS {
+            let (code, message) = Self::parse_status(&response.payload)?;
+            if code == SSH_FX_OK {
+                Ok(())
+            } else {
+                Err(SFTPError::ServerError(code, message))
+            }
+        } else {
+            error!("write_nowait: got unexpected response: {}", response);
             Err(SFTPError::UnexpectedResponse)
         }
     }

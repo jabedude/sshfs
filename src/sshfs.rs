@@ -375,8 +375,14 @@ impl NFSFileSystem for SshFS {
         // Use cached handle (or open if not cached)
         let handle = self.handle_cache.get_or_open(id, &path, &sftp).await?;
 
-        sftp.write(&handle, offset, data).await.map_err(Self::map_sftp_error)?;
-        let file_attrs = sftp.fstat(&handle).await.map_err(Self::map_sftp_error)?;
+        // Send both requests immediately
+        let write_request = sftp.write_nowait(&handle, offset, data).await.map_err(Self::map_sftp_error)?;
+        let file_attrs_request = sftp.fstat_nowait(&handle).await.map_err(Self::map_sftp_error)?;
+
+        // Wait for write to complete first
+        sftp.wait_for_status_response(write_request).await.map_err(Self::map_sftp_error)?;
+        // Then get fstat result
+        let file_attrs = sftp.wait_for_fileattrs_response(file_attrs_request).await.map_err(Self::map_sftp_error)?;
 
         // DON'T close - keep handle cached for subsequent writes
 
