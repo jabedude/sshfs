@@ -1,3 +1,4 @@
+use crate::handle_cache::HandleCache;
 use crate::inode_map::InodeMap;
 use crate::sftp::{SFTPConnection, SFTPOpenFlags};
 
@@ -12,6 +13,7 @@ use nfsserve::{
     vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities},
 };
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 pub struct SshFS {
@@ -27,6 +29,9 @@ pub struct SshFS {
 
     // Inode mapping
     inode_map: Arc<InodeMap>,
+
+    // File handle cache (reduces OPEN/CLOSE overhead)
+    handle_cache: Arc<HandleCache>,
 }
 
 unsafe impl Sync for SshFS {}
@@ -46,9 +51,10 @@ impl SshFS {
             username,
             port,
             remote_root: remote_root.clone(),
-            read_only: true,
+            read_only: false,
             connection: Arc::new(Mutex::new(None)),
             inode_map: Arc::new(InodeMap::new(remote_root, 0)),
+            handle_cache: Arc::new(HandleCache::new(Duration::from_secs(30))),
         }
     }
 
@@ -80,9 +86,35 @@ impl SshFS {
 
             log::info!("SFTP connection established");
             *conn_guard = Some(sftp);
+
+            // Start background cleanup task for handle cache
+            self.start_handle_cleanup_task();
         }
 
         Ok(())
+    }
+
+    /// Start background task to periodically cleanup idle handles
+    fn start_handle_cleanup_task(&self) {
+        let connection = Arc::clone(&self.connection);
+        let handle_cache = Arc::clone(&self.handle_cache);
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+
+                // Try to cleanup idle handles
+                let conn_guard = connection.lock().await;
+                if let Some(sftp) = conn_guard.as_ref() {
+                    info!("handle_cache timer fired, running cleanup");
+                    handle_cache.cleanup_idle(sftp).await;
+                }
+                // Lock is released here when guard is dropped
+            }
+        });
+
+        log::info!("Started handle cache cleanup task");
     }
 
     /// Get the SFTP connection, ensuring it's established (guard-based)
@@ -339,10 +371,14 @@ impl NFSFileSystem for SshFS {
         debug!("write: file {id} @{offset} path: {path}");
 
         let sftp = self.sftp().await?;
-        let handle = sftp.open(&path, SFTPOpenFlags::WRITE).await.map_err(Self::map_sftp_error)?;
+
+        // Use cached handle (or open if not cached)
+        let handle = self.handle_cache.get_or_open(id, &path, &sftp).await?;
+
         sftp.write(&handle, offset, data).await.map_err(Self::map_sftp_error)?;
         let file_attrs = sftp.fstat(&handle).await.map_err(Self::map_sftp_error)?;
-        sftp.close(handle).await.map_err(Self::map_sftp_error)?;
+
+        // DON'T close - keep handle cached for subsequent writes
 
         let nfs_attrs = self.sftp_attrs_to_nfs(file_attrs, id);
 
@@ -418,6 +454,12 @@ impl NFSFileSystem for SshFS {
         info!("remove: file path: {child_path}");
 
         let sftp = self.sftp().await?;
+
+        // Invalidate handle cache first (if file was open)
+        if let Some(inode) = self.inode_map.get_inode(&child_path) {
+            self.handle_cache.invalidate(inode, &sftp).await;
+        }
+
         sftp.remove(&child_path).await.map_err(Self::map_sftp_error)?;
 
         // Clean up inode cache

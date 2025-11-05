@@ -4,6 +4,7 @@ dead_code)]
 mod sftp;
 mod sshfs;
 mod inode_map;
+mod handle_cache;
 
 use nfsserve::tcp::*;
 use sshfs::SshFS;
