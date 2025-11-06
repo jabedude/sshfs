@@ -2,8 +2,9 @@
 //!
 //! Caches open SFTP file handles to avoid repeated OPEN/CLOSE operations.
 //! Handles are automatically closed after being idle for a configurable timeout.
+//! Also caches file attributes to reduce FSTAT round trips.
 
-use crate::sftp::{SFTPConnection, SFTPHandle, SFTPOpenFlags};
+use crate::sftp::{FileAttributes, SFTPConnection, SFTPHandle, SFTPOpenFlags};
 use log::{debug, info};
 use nfsserve::nfs::{fileid3, nfsstat3};
 use std::collections::HashMap;
@@ -16,6 +17,10 @@ struct CachedHandle {
     handle: SFTPHandle,
     last_used: Instant,
     path: String, // For debugging/validation
+
+    // Attribute caching
+    cached_attrs: Option<FileAttributes>,
+    last_fstat: Option<Instant>,
 }
 
 /// Cache for SFTP file handles
@@ -28,6 +33,9 @@ pub struct HandleCache {
 
     /// How long before closing idle handles
     idle_timeout: Duration,
+
+    /// How long to cache file attributes (reduces FSTAT calls)
+    attr_cache_ttl: Duration,
 }
 
 impl HandleCache {
@@ -35,10 +43,12 @@ impl HandleCache {
     ///
     /// # Arguments
     /// * `idle_timeout` - Duration after which unused handles are closed
-    pub fn new(idle_timeout: Duration) -> Self {
+    /// * `attr_cache_ttl` - Duration to cache file attributes (e.g., 100ms)
+    pub fn new(idle_timeout: Duration, attr_cache_ttl: Duration) -> Self {
         Self {
             handles: Arc::new(Mutex::new(HashMap::new())),
             idle_timeout,
+            attr_cache_ttl,
         }
     }
 
@@ -77,17 +87,68 @@ impl HandleCache {
                 nfsstat3::NFS3ERR_IO
             })?;
 
-        // Cache it
+        // Cache it (without attributes initially)
         cache.insert(
             file_id,
             CachedHandle {
                 handle: handle.clone(),
                 last_used: Instant::now(),
                 path: path.to_string(),
+                cached_attrs: None,
+                last_fstat: None,
             },
         );
 
         Ok(handle)
+    }
+
+    /// Check if we have fresh cached attributes
+    ///
+    /// Returns Some(attrs) if cached and fresh, None otherwise
+    pub async fn get_cached_attrs(&self, file_id: fileid3) -> Option<FileAttributes> {
+        let mut cache = self.handles.lock().await;
+        let now = Instant::now();
+
+        if let Some(cached) = cache.get_mut(&file_id) {
+            if let (Some(attrs), Some(last_fstat)) = (&cached.cached_attrs, cached.last_fstat) {
+                if now.duration_since(last_fstat) < self.attr_cache_ttl {
+                    debug!(
+                        "Using cached attributes for file {} (age: {:?})",
+                        file_id,
+                        now.duration_since(last_fstat)
+                    );
+                    cached.last_used = now;
+                    return Some(attrs.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Update cached attributes for a file
+    pub async fn update_cached_attrs(&self, file_id: fileid3, attrs: FileAttributes) {
+        let mut cache = self.handles.lock().await;
+        let now = Instant::now();
+
+        if let Some(cached) = cache.get_mut(&file_id) {
+            debug!("Updating cached attributes for file {}", file_id);
+            cached.cached_attrs = Some(attrs);
+            cached.last_fstat = Some(now);
+            cached.last_used = now;
+        }
+    }
+
+    /// Invalidate cached attributes (but keep handle open)
+    ///
+    /// Called when attributes change (setattr, truncate, etc.)
+    pub async fn invalidate_attrs(&self, file_id: fileid3) {
+        let mut cache = self.handles.lock().await;
+
+        if let Some(cached) = cache.get_mut(&file_id) {
+            debug!("Invalidating cached attributes for file {}", file_id);
+            cached.cached_attrs = None;
+            cached.last_fstat = None;
+        }
     }
 
     /// Close and remove idle handles
@@ -153,7 +214,8 @@ mod tests {
 
     #[test]
     fn test_cache_creation() {
-        let cache = HandleCache::new(Duration::from_secs(30));
+        let cache = HandleCache::new(Duration::from_secs(30), Duration::from_millis(100));
         assert_eq!(cache.idle_timeout, Duration::from_secs(30));
+        assert_eq!(cache.attr_cache_ttl, Duration::from_millis(100));
     }
 }

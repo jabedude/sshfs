@@ -14,7 +14,7 @@ use nfsserve::{
 };
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 
 pub struct SshFS {
     // Connection configuration
@@ -24,8 +24,8 @@ pub struct SshFS {
     remote_root: String,
     read_only: bool,
 
-    // SFTP connection (lazy initialized)
-    connection: Arc<Mutex<Option<SFTPConnection>>>,
+    // SFTP connection (lazy initialized, then shared concurrently)
+    connection: Arc<OnceCell<SFTPConnection>>,
 
     // Inode mapping
     inode_map: Arc<InodeMap>,
@@ -52,9 +52,12 @@ impl SshFS {
             port,
             remote_root: remote_root.clone(),
             read_only: false,
-            connection: Arc::new(Mutex::new(None)),
+            connection: Arc::new(OnceCell::new()),
             inode_map: Arc::new(InodeMap::new(remote_root, 0)),
-            handle_cache: Arc::new(HandleCache::new(Duration::from_secs(30))),
+            handle_cache: Arc::new(HandleCache::new(
+                Duration::from_secs(30),      // Handle idle timeout
+                Duration::from_secs(60),      // Attribute cache TTL (long for write-behind)
+            )),
         }
     }
 
@@ -63,33 +66,32 @@ impl SshFS {
     /// This is called lazily on the first operation. If the connection
     /// already exists, this is a no-op.
     async fn ensure_connected(&self) -> Result<(), nfsstat3> {
-        let mut conn_guard = self.connection.lock().await;
+        self.connection
+            .get_or_try_init(|| async {
+                log::info!(
+                    "Establishing SFTP connection to {}@{}:{}",
+                    self.username, self.hostname, self.port
+                );
 
-        if conn_guard.is_none() {
-            log::info!(
-                "Establishing SFTP connection to {}@{}:{}",
-                self.username,
-                self.hostname,
-                self.port
-            );
+                let sftp = SFTPConnection::new(
+                    self.hostname.clone(),
+                    self.port,
+                    self.username.clone(),
+                );
 
-            let sftp = SFTPConnection::new(
-                self.hostname.clone(),
-                self.port,
-                self.username.clone(),
-            );
+                sftp.connect().await.map_err(|e| {
+                    log::error!("Failed to connect to SFTP server: {}", e);
+                    nfsstat3::NFS3ERR_IO
+                })?;
 
-            sftp.connect().await.map_err(|e| {
-                log::error!("Failed to connect to SFTP server: {}", e);
-                nfsstat3::NFS3ERR_IO
-            })?;
+                log::info!("SFTP connection established");
 
-            log::info!("SFTP connection established");
-            *conn_guard = Some(sftp);
+                // Start background cleanup task for handle cache
+                self.start_handle_cleanup_task();
 
-            // Start background cleanup task for handle cache
-            self.start_handle_cleanup_task();
-        }
+                Ok::<_, nfsstat3>(sftp)
+            })
+            .await?;
 
         Ok(())
     }
@@ -105,12 +107,10 @@ impl SshFS {
                 interval.tick().await;
 
                 // Try to cleanup idle handles
-                let conn_guard = connection.lock().await;
-                if let Some(sftp) = conn_guard.as_ref() {
+                if let Some(sftp) = connection.get() {
                     info!("handle_cache timer fired, running cleanup");
                     handle_cache.cleanup_idle(sftp).await;
                 }
-                // Lock is released here when guard is dropped
             }
         });
 
@@ -126,15 +126,11 @@ impl SshFS {
     /// let sftp = self.sftp().await?;
     /// let attrs = sftp.stat(&path).await.map_err(Self::map_sftp_error)?;
     /// ```
-    async fn sftp(&self) -> Result<impl std::ops::Deref<Target = SFTPConnection> + '_, nfsstat3> {
+    async fn sftp(&self) -> Result<&SFTPConnection, nfsstat3> {
         self.ensure_connected().await?;
 
-        let guard = self.connection.lock().await;
-
-        // Map the MutexGuard<Option<SFTPConnection>> to just the SFTPConnection
-        Ok(tokio::sync::MutexGuard::map(guard, |opt| {
-            opt.as_mut().expect("Connection should be established")
-        }))
+        // OnceCell guarantees the connection exists after ensure_connected succeeds
+        Ok(self.connection.get().expect("sftp connection should be initialized!"))
     }
 
     /// Map errnos to NFS errors
@@ -321,7 +317,68 @@ impl NFSFileSystem for SshFS {
     #[doc = " Sets the attributes of an id"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS) if readonly"]
     async fn setattr(&self, id: fileid3, setattr: sattr3) -> Result<fattr3, nfsstat3> {
-        todo!()
+        use nfs::{set_mode3, set_uid3, set_gid3, set_size3, set_atime, set_mtime};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        if self.read_only {
+            return Err(nfsstat3::NFS3ERR_ROFS);
+        }
+
+        let path = self.inode_map.get_path(id).ok_or_else(|| {
+            log::warn!("setattr: unknown inode {}", id);
+            nfsstat3::NFS3ERR_NOENT
+        })?;
+
+        let permissions = match setattr.mode {
+            set_mode3::mode(m) => Some(m),
+            set_mode3::Void => None,
+        };
+
+        let uid = match setattr.uid {
+            set_uid3::uid(u) => Some(u),
+            set_uid3::Void => None,
+        };
+
+        let gid = match setattr.gid {
+            set_gid3::gid(g) => Some(g),
+            set_gid3::Void => None,
+        };
+
+        let uid_gid = uid.zip(gid);
+
+        let size = match setattr.size {
+            set_size3::size(s) => Some(s),
+            set_size3::Void => None,
+        };
+
+        let access_time = match setattr.atime {
+            set_atime::SET_TO_CLIENT_TIME(t) => Some(UNIX_EPOCH + std::time::Duration::from_secs(t.seconds as u64)),
+            _ => None,
+        };
+
+        let modification_time = match setattr.mtime {
+            set_mtime::SET_TO_CLIENT_TIME(t) => Some(UNIX_EPOCH + std::time::Duration::from_secs(t.seconds as u64)),
+            _ => None,
+        };
+
+        let atime_mtime = access_time.zip(modification_time);
+
+        let sftp = self.sftp().await?;
+        sftp.setstat(&path, size, uid_gid, permissions, atime_mtime).await.map_err(Self::map_sftp_error)?;
+
+        // Invalidate attribute cache since we just changed attributes
+        // (especially important if size changed via truncate)
+        self.handle_cache.invalidate_attrs(id).await;
+
+        // Read back the updated attributes
+        let file_attrs = sftp.lstat(&path).await.map_err(Self::map_sftp_error)?;
+
+        // Cache the fresh attributes
+        self.handle_cache.update_cached_attrs(id, file_attrs.clone()).await;
+
+        let nfs_attrs = self.sftp_attrs_to_nfs(file_attrs, id);
+
+        Ok(nfs_attrs)
     }
 
     #[doc = " Reads the contents of a file returning (bytes, EOF)"]
@@ -355,39 +412,46 @@ impl NFSFileSystem for SshFS {
     #[doc = " If not supported due to readonly file system"]
     #[doc = " this should return Err(nfsstat3::NFS3ERR_ROFS)"]
     async fn write(&self, id: fileid3, offset: u64, data: &[u8]) -> Result<fattr3, nfsstat3> {
-        // TODO: opens and closes the file on every write call. This means for a typical file write
-        // Client writes 1MB file in 32KB chunks:
-        // Each does: OPEN → WRITE → FSTAT → CLOSE
-        // That's 4 round trips × 32 = 128 round trips!
-        // Yikes!
-        //
-        // we should consider alternatives where we keep around the handle. but maybe that's just a
-        // downside of the stateless-ness of nfsv3
         if self.read_only {
             return Err(nfsstat3::NFS3ERR_ROFS);
         }
 
         let path = self.inode_map.get_path(id).ok_or(nfsstat3::NFS3ERR_NOENT)?;
-        debug!("write: file {id} @{offset} path: {path}");
 
         let sftp = self.sftp().await?;
 
         // Use cached handle (or open if not cached)
         let handle = self.handle_cache.get_or_open(id, &path, &sftp).await?;
 
-        // Send both requests immediately
-        let write_request = sftp.write_nowait(&handle, offset, data).await.map_err(Self::map_sftp_error)?;
-        let file_attrs_request = sftp.fstat_nowait(&handle).await.map_err(Self::map_sftp_error)?;
+        // Check if we have cached attributes
+        let file_attrs = if let Some(mut cached_attrs) = self.handle_cache.get_cached_attrs(id).await {
+            // We have cached attrs - just send write (no FSTAT!)
+            info!("write: using cached attrs, old_size={}", cached_attrs.size);
 
-        // Wait for write to complete first
-        sftp.wait_for_status_response(write_request).await.map_err(Self::map_sftp_error)?;
-        // Then get fstat result
-        let file_attrs = sftp.wait_for_fileattrs_response(file_attrs_request).await.map_err(Self::map_sftp_error)?;
+            sftp.write(&handle, offset, data).await.map_err(Self::map_sftp_error)?;
+
+            // Calculate new size (write extends file if offset+len > current size)
+            let write_end = offset + data.len() as u64;
+            cached_attrs.size = cached_attrs.size.max(write_end);
+
+            // Update cache with new size
+            self.handle_cache.update_cached_attrs(id, cached_attrs.clone()).await;
+
+            cached_attrs
+        } else {
+            // No cached attrs - need to FSTAT after write to get initial attrs
+            sftp.write(&handle, offset, data).await.map_err(Self::map_sftp_error)?;
+
+            let attrs = sftp.fstat(&handle).await.map_err(Self::map_sftp_error)?;
+
+            self.handle_cache.update_cached_attrs(id, attrs.clone()).await;
+
+            attrs
+        };
 
         // DON'T close - keep handle cached for subsequent writes
 
         let nfs_attrs = self.sftp_attrs_to_nfs(file_attrs, id);
-
         Ok(nfs_attrs)
     }
 
