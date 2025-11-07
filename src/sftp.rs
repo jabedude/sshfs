@@ -21,6 +21,7 @@ use tokio::task::JoinHandle;
 // ============================================================================
 // SFTP Protocol Constants
 // ============================================================================
+const SSHFS_SFTP_VERSION: u32 = 3;
 
 // SFTP Protocol Version 3 - Message Types
 const SSH_FXP_INIT: u8 = 1;
@@ -403,6 +404,13 @@ impl fmt::Display for SFTPResponse {
     }
 }
 
+/// SFTP Extension type
+#[derive(Debug)]
+struct SFTPExtension {
+    name: String,
+    data: String,
+}
+
 // ============================================================================
 // Thread-Safe Helper Types
 // ============================================================================
@@ -446,6 +454,9 @@ pub struct SFTPConnection {
     port: u16,
     username: String,
 
+    // Server reported supported extensions
+    extensions: Arc<Mutex<Vec<SFTPExtension>>>,
+
     // SSH process and pipes (protected by mutex)
     process: Arc<Mutex<Option<ProcessState>>>,
 
@@ -464,6 +475,7 @@ impl SFTPConnection {
             hostname,
             port,
             username,
+            extensions: Arc::new(Mutex::new(Vec::new())),
             process: Arc::new(Mutex::new(None)),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
             request_id_counter: RequestIdCounter::new(),
@@ -1119,7 +1131,7 @@ impl SFTPConnection {
         // Build INIT packet
         let mut buffer = SFTPBuffer::new();
         buffer.append_u8(SSH_FXP_INIT);
-        buffer.append_u32(3); // SFTP protocol version 3
+        buffer.append_u32(SSHFS_SFTP_VERSION); // SFTP protocol version 3
 
         self.send_packet(buffer).await?;
 
@@ -1141,6 +1153,19 @@ impl SFTPConnection {
             .ok_or_else(|| SFTPError::ProtocolError("Failed to parse VERSION".into()))?;
 
         info!("SFTP server version: {}", version);
+
+        while !payload.data.is_empty() {
+            // They come in pairs (name, data)
+            if let Some(extension_name) = payload.read_string() && let Some(extension_data) = payload.read_string() {
+                let extension = SFTPExtension {
+                    name: extension_name,
+                    data: extension_data,
+                };
+                info!("Got extension {:?}", extension);
+                self.extensions.lock().await.push(extension);
+            }
+        }
+
         Ok(())
     }
 
