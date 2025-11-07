@@ -426,7 +426,7 @@ impl NFSFileSystem for SshFS {
         // Check if we have cached attributes
         let file_attrs = if let Some(mut cached_attrs) = self.handle_cache.get_cached_attrs(id).await {
             // We have cached attrs - just send write (no FSTAT!)
-            info!("write: using cached attrs, old_size={}", cached_attrs.size);
+            debug!("write: using cached attrs, old_size={}", cached_attrs.size);
 
             sftp.write(&handle, offset, data).await.map_err(Self::map_sftp_error)?;
 
