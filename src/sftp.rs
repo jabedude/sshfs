@@ -870,6 +870,69 @@ impl SFTPConnection {
         }
     }
 
+    /// Make a directory
+    pub async fn mkdir(&self, path: &str, _attrs: Option<&FileAttributes>) -> Result<()> {
+        let request_id = self.request_id_counter.next();
+
+        // Build MKDIR packet
+        let mut buffer = SFTPBuffer::new();
+        buffer.append_u8(SSH_FXP_MKDIR);
+        buffer.append_u32(request_id);
+        buffer.append_string(path);
+        // TODO: Should we actually do something with attrs if NFS can't send us any?
+        buffer.append_attrs(None, None, None, None);
+
+        self.send_packet(buffer).await?;
+
+        // Wait for response
+        let response = self.wait_for_response(request_id).await?;
+
+        debug!("mkdir: got response: {}", response);
+
+        // Should get STATUS response
+        if response.type_ == SSH_FXP_STATUS {
+            let (code, message) = Self::parse_status(&response.payload)?;
+            if code == SSH_FX_OK {
+                Ok(())
+            } else {
+                Err(SFTPError::ServerError(code, message))
+            }
+        } else {
+            error!("mkdir: got unexpected response: {}", response);
+            Err(SFTPError::UnexpectedResponse)
+        }
+    }
+
+    /// Remove a directory
+    pub async fn rmdir(&self, path: &str) -> Result<()> {
+        let request_id = self.request_id_counter.next();
+
+        // Build RMDIR packet
+        let mut buffer = SFTPBuffer::new();
+        buffer.append_u8(SSH_FXP_RMDIR);
+        buffer.append_u32(request_id);
+        buffer.append_string(path);
+
+        self.send_packet(buffer).await?;
+
+        // Wait for response
+        let response = self.wait_for_response(request_id).await?;
+
+        debug!("rmdir: got response: {}", response);
+
+        // Should get STATUS response
+        if response.type_ == SSH_FXP_STATUS {
+            let (code, message) = Self::parse_status(&response.payload)?;
+            if code == SSH_FX_OK {
+                Ok(())
+            } else {
+                Err(SFTPError::ServerError(code, message))
+            }
+        } else {
+            error!("rmdir: got unexpected response: {}", response);
+            Err(SFTPError::UnexpectedResponse)
+        }
+    }
     /// Read from a file
     pub async fn read(&self, handle: &SFTPHandle, offset: u64, length: u32) -> Result<Vec<u8>> {
         let request_id = self.request_id_counter.next();
@@ -1540,6 +1603,18 @@ mod tests {
         assert!(conn.close(handle).await.is_ok());
 
         assert!(conn.remove("/home/josh/testcreate").await.is_ok());
+
+        println!("Disconnecting...");
+        conn.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn test_make_and_remove_dir() {
+        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        assert!(conn.connect().await.is_ok());
+
+        assert!(conn.mkdir("/home/josh/testmkdir", None).await.is_ok());
+        assert!(conn.rmdir("/home/josh/testmkdir").await.is_ok());
 
         println!("Disconnecting...");
         conn.disconnect().await;
