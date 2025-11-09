@@ -4,11 +4,11 @@ A Rust implementation that exposes remote filesystems over SSH/SFTP as a local N
 
 ## Status
 
-**Active Development** - This project is currently under active development. It can mount remote systems in **read-only mode** via NFS v3.
+**Active Development** - This project is currently under active development. It can mount remote systems as read-only or read-write.
 
 ## What is it?
 
-Think of it like glue/middleware between an NFS server and SFTP. sshfs provides an NFS server that proxies filesystem operations to a remote system over SSH/SFTP. This allows you to mount remote directories using standard NFS clients without requiring FUSE or special kernel modules.
+Think of it like glue/middleware between an NFS server and SFTP. sshfs provides an NFS server that proxies filesystem operations to a remote system over SSH/SFTP. This allows you to mount remote directories using standard NFS clients without requiring FUSE or kernel extensions (particularly on macOS).
 
 ## Usage
 
@@ -17,27 +17,26 @@ Think of it like glue/middleware between an NFS server and SFTP. sshfs provides 
 cargo build --release
 ```
 
-2. Run the server (modify the hardcoded connection details in `src/main.rs` as needed):
+2. Run the server (mainly the same usage as FUSE sshfs):
 ```bash
-./target/release/sshfs
+./target/debug/sshfs [user@]host:[dir] mountpoint
 ```
 
-3. Mount the remote filesystem:
+3. Mount the proxied filesystem:
 ```bash
-sudo mount -t nfs -o nolocks,vers=3,tcp,port=11111,mountport=11111,soft 127.0.0.1:/ /path/to/mountpoint
+mount -t nfs -o nolocks,vers=3,tcp,port=11111,mountport=11111,soft 127.0.0.1:/ /path/to/mountpoint
 ```
 
 ## Current Features
 
 - SSH/SFTP connection to remote systems
 - NFS v3 server implementation
-- Read-only filesystem operations
+- Read/write filesystem operations
 - Directory listing
 - File reading
 
 ## Roadmap
 
-- Write support
 - Better configuration (CLI arguments, config file)
 - Multiple simultaneous mounts
 - Performance optimizations
