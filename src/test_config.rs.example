@@ -1,0 +1,6 @@
+// Test SSH connection configuration
+// Copy this file to test_config.rs and customize for your environment
+
+const TEST_SSH_HOST: &str = "localhost";
+const TEST_SSH_USER: &str = "your-username";
+const TEST_SSH_PORT: u16 = 22;

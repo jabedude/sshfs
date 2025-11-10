@@ -1478,12 +1478,16 @@ mod tests {
     use crate::sftp::SFTPOpenFlags;
     use crate::sftp::SFTPConnection;
 
+    // Stupid simple way to embed configuration...
+    include!("test_config.rs");
+
     #[tokio::test]
     async fn test_dir_listing_basic() {
-        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        let conn = SFTPConnection::new(TEST_SSH_HOST.into(), TEST_SSH_PORT, TEST_SSH_USER.into());
         assert!(conn.connect().await.is_ok());
 
-        match conn.list_directory("/home/josh".into()).await {
+        let test_path = format!("/home/{}", TEST_SSH_USER);
+        match conn.list_directory(&test_path).await {
             Ok(entries) => {
                 for entry in entries {
                     // Skip . and ..
@@ -1514,10 +1518,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_basic() {
-        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        let conn = SFTPConnection::new(TEST_SSH_HOST.into(), TEST_SSH_PORT, TEST_SSH_USER.into());
         assert!(conn.connect().await.is_ok());
 
-        let handle = conn.open("/home/josh/hello.txt", SFTPOpenFlags::READ).await.unwrap();
+        let test_file = format!("/home/{}/hello.txt", TEST_SSH_USER);
+        let handle = conn.open(&test_file, SFTPOpenFlags::READ).await.unwrap();
 
         let contents = conn.read(&handle, 0, 1024).await.unwrap();
         assert!(!contents.is_empty());
@@ -1530,10 +1535,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_fstat_basic() {
-        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        let conn = SFTPConnection::new(TEST_SSH_HOST.into(), TEST_SSH_PORT, TEST_SSH_USER.into());
         assert!(conn.connect().await.is_ok());
 
-        let handle = conn.open("/home/josh/hello.txt", SFTPOpenFlags::READ).await.unwrap();
+        let test_file = format!("/home/{}/hello.txt", TEST_SSH_USER);
+        let handle = conn.open(&test_file, SFTPOpenFlags::READ).await.unwrap();
 
         let stat = conn.fstat(&handle).await.unwrap();
         assert_eq!(stat.size, 5);
@@ -1545,24 +1551,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_setstat_basic() {
-        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        let conn = SFTPConnection::new(TEST_SSH_HOST.into(), TEST_SSH_PORT, TEST_SSH_USER.into());
         assert!(conn.connect().await.is_ok());
 
+        let test_file = format!("/home/{}/teststat", TEST_SSH_USER);
         // Test chmod: only set permissions, don't try to chown (requires root)
         conn.setstat(
-            "/home/josh/teststat",
+            &test_file,
             None,                // Don't change size
             None,                // Don't change uid/gid (would require root)
             Some(0o100764),      // Change permissions (with file type bits)
             None,                // Don't change times
         ).await.unwrap();
 
-        let stat = conn.stat("/home/josh/teststat").await.unwrap();
+        let stat = conn.stat(&test_file).await.unwrap();
         assert_eq!(stat.permissions & 0o777, 0o764);  // Check permission bits only
 
         // Change back to 0664
         assert!(conn.setstat(
-            "/home/josh/teststat",
+            &test_file,
             None,
             None,
             Some(0o100664),      // Regular file with 0664 permissions
@@ -1575,10 +1582,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_readlink() {
-        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        let conn = SFTPConnection::new(TEST_SSH_HOST.into(), TEST_SSH_PORT, TEST_SSH_USER.into());
         assert!(conn.connect().await.is_ok());
 
-        let target = conn.readlink("/home/josh/testlink").await.unwrap();
+        let test_link = format!("/home/{}/testlink", TEST_SSH_USER);
+        let target = conn.readlink(&test_link).await.unwrap();
         assert_eq!("hello.txt", target);
 
         println!("Disconnecting...");
@@ -1587,7 +1595,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_remove() {
-        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        let conn = SFTPConnection::new(TEST_SSH_HOST.into(), TEST_SSH_PORT, TEST_SSH_USER.into());
         assert!(conn.connect().await.is_ok());
 
         let attrs = FileAttributes {
@@ -1599,10 +1607,11 @@ mod tests {
            modification_time: SystemTime::now(),
        };
 
-        let handle = conn.create("/home/josh/testcreate", &attrs).await.unwrap();
+        let test_file = format!("/home/{}/testcreate", TEST_SSH_USER);
+        let handle = conn.create(&test_file, &attrs).await.unwrap();
         assert!(conn.close(handle).await.is_ok());
 
-        assert!(conn.remove("/home/josh/testcreate").await.is_ok());
+        assert!(conn.remove(&test_file).await.is_ok());
 
         println!("Disconnecting...");
         conn.disconnect().await;
@@ -1610,11 +1619,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_make_and_remove_dir() {
-        let conn = SFTPConnection::new("pop-os".into(), 22, "josh".into());
+        let conn = SFTPConnection::new(TEST_SSH_HOST.into(), TEST_SSH_PORT, TEST_SSH_USER.into());
         assert!(conn.connect().await.is_ok());
 
-        assert!(conn.mkdir("/home/josh/testmkdir", None).await.is_ok());
-        assert!(conn.rmdir("/home/josh/testmkdir").await.is_ok());
+        let test_dir = format!("/home/{}/testmkdir", TEST_SSH_USER);
+        assert!(conn.mkdir(&test_dir, None).await.is_ok());
+        assert!(conn.rmdir(&test_dir).await.is_ok());
 
         println!("Disconnecting...");
         conn.disconnect().await;
