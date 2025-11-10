@@ -4,7 +4,7 @@ A Rust implementation that exposes remote filesystems over SSH/SFTP as a local N
 
 ## Status
 
-**Active Development** - This project is currently under active development. It can mount remote systems as read-only or read-write.
+**Active Development/ready for experimental use** - This project is currently under active development. It can mount remote systems as read-only or read-write. Risk of data loss is low but user be warned.
 
 ## What is it?
 
