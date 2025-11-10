@@ -26,6 +26,12 @@ cargo build --release
 ```bash
 mount -t nfs -o nolocks,vers=3,tcp,port=11111,mountport=11111,soft 127.0.0.1:/ /path/to/mountpoint
 ```
+4. Cleanup:
+```bash
+umount /path/to/mountpoint
+### Safe to kill `sshfs`
+killall sshfs
+```
 
 ## Current Features
 
