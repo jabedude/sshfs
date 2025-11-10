@@ -10,6 +10,9 @@ A Rust implementation that exposes remote filesystems over SSH/SFTP as a local N
 
 Think of it like glue/middleware between an NFS server and SFTP. sshfs provides an NFS server that proxies filesystem operations to a remote system over SSH/SFTP. This allows you to mount remote directories using standard NFS clients without requiring FUSE or kernel extensions (particularly on macOS).
 
+Just like the FUSE sshfs, this binary uses any/all SSH configuration you have
+set up on your system.
+
 ## Usage
 
 1. Build the project:
@@ -33,19 +36,13 @@ umount /path/to/mountpoint
 killall sshfs
 ```
 
-## Current Features
-
-- SSH/SFTP connection to remote systems
-- NFS v3 server implementation
-- Read/write filesystem operations
-- Directory listing
-- File reading
-
-## Roadmap
+## TODOs
 
 - Better configuration (CLI arguments, config file)
 - Multiple simultaneous mounts
-- Performance optimizations
+- Performance optimizations - write throughput is about 70-80% of sshfs+FUSE on
+  Linux. Some of it is fundamental to the overhead of the NFS translation but I
+  still want to do better.
 
 ## Requirements
 
