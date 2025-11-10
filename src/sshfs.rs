@@ -507,7 +507,28 @@ impl NFSFileSystem for SshFS {
         dirid: fileid3,
         dirname: &filename3,
     ) -> Result<(fileid3, fattr3), nfsstat3> {
-        Err(nfsstat3::NFS3ERR_ROFS)
+        if self.read_only {
+            return Err(nfsstat3::NFS3ERR_ROFS);
+        }
+
+        let parent_path = self.inode_map.get_path(dirid).ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let dirname_str = String::from_utf8_lossy(dirname.as_ref());
+        let directory_path = format!("{}/{}", parent_path.trim_end_matches('/'), dirname_str);
+        info!("mkdir: directory path: {directory_path}");
+
+        let sftp = self.sftp().await?;
+        sftp.mkdir(&directory_path, None).await.map_err(Self::map_sftp_error)?;
+
+        // Stat the new directory to get its attributes
+        let dir_attrs = sftp.lstat(&directory_path).await.map_err(Self::map_sftp_error)?;
+
+        // Allocate an inode for the new directory
+        let inode = self.inode_map.get_or_allocate(&directory_path);
+
+        // Convert to NFS attributes
+        let nfs_attrs = self.sftp_attrs_to_nfs(dir_attrs, inode);
+
+        Ok((inode, nfs_attrs))
     }
 
     #[doc = " Removes a file."]
