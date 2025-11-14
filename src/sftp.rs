@@ -838,7 +838,39 @@ impl SFTPConnection {
             Err(SFTPError::UnexpectedResponse)
         }
     }
-    ///
+
+    /// Rename a file
+    pub async fn rename(&self, old_path: &str, new_path: &str) -> Result<()> {
+        let request_id = self.request_id_counter.next();
+
+        // Build RENAME packet
+        let mut buffer = SFTPBuffer::new();
+        buffer.append_u8(SSH_FXP_RENAME);
+        buffer.append_u32(request_id);
+        buffer.append_string(old_path);
+        buffer.append_string(new_path);
+
+        self.send_packet(buffer).await?;
+
+        // Wait for response
+        let response = self.wait_for_response(request_id).await?;
+
+        debug!("rename: got response: {}", response);
+
+        // Should get STATUS response
+        if response.type_ == SSH_FXP_STATUS {
+            let (code, message) = Self::parse_status(&response.payload)?;
+            if code == SSH_FX_OK {
+                Ok(())
+            } else {
+                Err(SFTPError::ServerError(code, message))
+            }
+        } else {
+            error!("rename: got unexpected response: {}", response);
+            Err(SFTPError::UnexpectedResponse)
+        }
+    }
+
     /// Delete a file
     pub async fn remove(&self, path: &str) -> Result<()> {
         let request_id = self.request_id_counter.next();
@@ -1625,6 +1657,24 @@ mod tests {
         let test_dir = format!("/home/{}/testmkdir", TEST_SSH_USER);
         assert!(conn.mkdir(&test_dir, None).await.is_ok());
         assert!(conn.rmdir(&test_dir).await.is_ok());
+
+        println!("Disconnecting...");
+        conn.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn test_rename() {
+        let conn = SFTPConnection::new(TEST_SSH_HOST.into(), TEST_SSH_PORT, TEST_SSH_USER.into());
+        assert!(conn.connect().await.is_ok());
+
+        let test_file = format!("/home/{}/testmovefile", TEST_SSH_USER);
+        let test_file_new = format!("/home/{}/testmovefilenew", TEST_SSH_USER);
+        assert!(conn.rename(&test_file, &test_file_new).await.is_ok());
+        let stat = conn.stat(&test_file_new).await.unwrap();
+        assert_eq!(stat.uid, 1000);
+        assert!(conn.rename(&test_file_new, &test_file).await.is_ok());
+        let stat = conn.stat(&test_file).await.unwrap();
+        assert_eq!(stat.uid, 1000);
 
         println!("Disconnecting...");
         conn.disconnect().await;
